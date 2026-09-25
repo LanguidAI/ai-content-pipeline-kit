@@ -22,6 +22,10 @@
 
 判定不通过就不生成那个平台的发布包——而不是生成完再人工挑。只要文件躺在那里，人就会心软发出去。
 
+**4. 规则外置到配置，测试与配置同源**
+
+平台规则一年改好几次，写死在代码里就得改代码。更要紧的是：测试里的规则常量必须从配置读，不能另抄一份。原实现把策略版本号硬编码在测试 fixture 里，线上配置一改版本号，判定就静默降级成「人工复核」，两条用例长期挂着没人发现。
+
 ## 已发布模块
 
 ### `acpk.layout_qa` — 竖版视频版式质检
@@ -54,12 +58,58 @@ assess_shot_layout(shot)
 
 可调参数：`HORIZONTAL_ASPECT_THRESHOLD`（默认 `1.4`，取 1.4 而非 16/9≈1.78 是因为实拍截图和图表常落在 1.4~1.7，用 16/9 会漏判）、`FOCUS_LAYOUTS`、`MULTI_HORIZONTAL_LAYOUTS`。
 
+### `acpk.platform_router` — 多平台分发判定
+
+一条素材做好、三个平台全发，看起来效率很高，实际是拿同一套表达去撞三个完全不同的推荐机制：一条内容不可能同时满足「完播+搜索」「社交转发」「前 3 秒冲突」，于是它在三个平台上都表现平庸。
+
+```python
+from acpk.platform_router import build_platform_decision
+
+storyboard = {
+    "selection_policy_version": "v1",
+    "primary_platform": "bilibili",
+    "secondary_platforms": [],
+    "platform_publish_suggestion": {"bilibili": "publish", "shipinhao": "skip", "douyin": "skip"},
+    "bilibili_fit": 82,
+    "bilibili_version": {
+        "search_question": "工作流调用模型失败怎么办",
+        "search_keywords": ["工作流", "Tool Calling"],
+        "opening_answer": "参数错误不能靠重试解决",
+        "viewer_save_asset": "重试降级熔断判断树",
+    },
+}
+
+decision = build_platform_decision(storyboard=storyboard)
+# decision["mode"]                  -> 'strict_platform_assets_v2'
+# decision["recommended_platforms"] -> ['bilibili']
+# decision["platforms"]["shipinhao"]["action"] -> 'skip'
+```
+
+**三种判定模式**，由输入数据的完整度决定，不需要调用方指定：
+
+| 模式 | 触发条件 | 行为 |
+| --- | --- | --- |
+| `legacy_no_platform_scores` | 没有策略版本、也没有任何适配分 | 保留发布任务交人工复核。**缺失不当 0 分**，否则存量选题会被全部 skip、产线空转 |
+| `score_threshold_v1` | 有适配分、没有策略版本 | 只按阈值判：≥75 `publish`、70~74 `adapt`、<70 `skip` |
+| `strict_platform_assets_v2` | 带策略版本 | 主平台 + 最多一个次平台，其余一律 `skip`；叠加分数闸门、必填资产闸门、策略版本闸门 |
+
+**四道闸门按顺序收紧**，任何一道不过就从 `publish` 降级：
+
+1. **产能闸门** —— 不在主/次平台名单里直接 `skip`。真正适配一个平台要重做角度、结构、标题、时长、封面，摊到三个平台就是三个都不达标。
+2. **分数闸门** —— 低于该平台 `publish_min_score` 降级。抖音豁免：它的分数常年缺失，用分数判会永远误杀。
+3. **资产闸门** —— 分数够不等于能发，缺必填资产一律降 `adapt`。`["", "  "]` 这种有长度没内容的空壳算缺失。抖音的动作点还有上下限（2~3 个）：塞太多等于没重点，太少等于没交付。
+4. **策略版本闸门** —— 版本号认不出来时 fail-closed，不猜、不放行，降为人工改写复核。
+
+另外提供 `topic_selection_blocked()` 和 `duplicate_promise()`，把拦截点提前到脚本生成之前。后者防的是自动化产线最大的隐性故障：它会非常稳定地生产同质内容，而流程本身一切正常、不报任何错——人工做号会腻，程序不会。
+
+阈值、必填资产、平台数量上限全部在 `DEFAULT_CONFIG` 里，可以用 `config_from_dict()` / `config_from_json()` 覆盖，改规则不需要改代码。
+
 ## 路线图
 
 | 模块 | 状态 | 内容 |
 | --- | --- | --- |
 | `layout_qa` | ✅ 已发布 | 竖版版式质检 |
-| `platform_router` | 🚧 进行中 | 多平台分发判定：`publish` / `adapt` / `skip` 三态、适配分门槛、各平台必填字段闸门、N 天内容承诺查重 |
+| `platform_router` | ✅ 已发布 | 多平台分发判定：`publish` / `adapt` / `skip` 三态、三种判定模式、四道闸门、N 天内容承诺查重 |
 | `media_qa` | 🚧 进行中 | 音视频质量闸门：口播语速上限、音频失真阈值、尾部静音时长、BGM 响度区间、TTS 音色参数整套继承 |
 
 ## 安装与测试
