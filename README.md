@@ -104,13 +104,46 @@ decision = build_platform_decision(storyboard=storyboard)
 
 阈值、必填资产、平台数量上限全部在 `DEFAULT_CONFIG` 里，可以用 `config_from_dict()` / `config_from_json()` 覆盖，改规则不需要改代码。
 
+### `acpk.media_qa` — 音视频质量闸门
+
+自动产线的音视频步骤「永远成功」：渲染退出码 0、文件存在、时长正确，
+但口播可能失真、BGM 可能没混进去、没人听过的片子可能被直接发布。
+这个模块的每道闸门都要求给出「能发现静默失败」的证据，而不是相信退出码。
+
+```python
+from acpk.media_qa import (
+    DEFAULT_CONFIG, audio_mix_proven, bgm_volume_report, finalize_states,
+    loudness_report, pcm_sha256, publish_gate, speed_violations,
+    tail_silence_report, tts_param_drift,
+)
+
+speeds = speed_violations(card_plan["lines"], DEFAULT_CONFIG)   # 口播被压缩加速的卡
+silence = tail_silence_report(card_plan["lines"], DEFAULT_CONFIG)  # 尾部静音/死空气
+mixed = audio_mix_proven(voiceover_hash, pcm_sha256(final_pcm))  # BGM 真混进去了吗
+drift = tts_param_drift(base_tts_params, new_tts_params, DEFAULT_CONFIG)
+states = finalize_states(manually_reviewed=False)  # 没人听过 → 绝不给 ready
+gate = publish_gate(**states)                      # 发布前总闸
+```
+
+| 闸门 | 函数 | 拦的是什么 |
+| --- | --- | --- |
+| 口播倍速 | `speed_violations()` | 口播比卡片长就被压缩加速，实测超 1.35 倍开始吞字失真 |
+| 尾部静音 | `tail_silence_report()` | 口播比卡片短就用静音补位，单卡秒数 + 全片占比双指标 |
+| 混音证明 | `audio_mix_proven()` + `pcm_sha256()` | 混音命令成功但 BGM 没混入：成片与口播轨哈希相同即失败 |
+| 响度 / BGM 音量 | `loudness_report()` / `bgm_volume_report()` | 峰值顶破限峰、均值出带；照抄混音库默认 -23dB 也算没做判断 |
+| TTS 参数继承 | `tts_param_drift()` | 换音色/复用旧包漏 rate、volume、pitch 会静默漂移 |
+| 发布总闸 | `publish_gate()` + `finalize_states()` | 无人听审的片子流向发布口 |
+
+阈值全部在 `DEFAULT_CONFIG`（`MediaQaConfig`），可用 `config_from_dict()` /
+`config_from_json()` 覆盖。每个默认值背后都有一次真实事故，注释里写了来由。
+
 ## 路线图
 
 | 模块 | 状态 | 内容 |
 | --- | --- | --- |
 | `layout_qa` | ✅ 已发布 | 竖版版式质检 |
 | `platform_router` | ✅ 已发布 | 多平台分发判定：`publish` / `adapt` / `skip` 三态、三种判定模式、四道闸门、N 天内容承诺查重 |
-| `media_qa` | 🚧 进行中 | 音视频质量闸门：口播语速上限、音频失真阈值、尾部静音时长、BGM 响度区间、TTS 音色参数整套继承 |
+| `media_qa` | ✅ 已发布 | 音视频质量闸门：口播倍速上限、尾部静音、混音哈希证明、响度与 BGM 音量带、TTS 参数整套继承、发布总闸 |
 
 ## 安装与测试
 
