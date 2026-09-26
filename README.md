@@ -137,6 +137,23 @@ gate = publish_gate(**states)                      # 发布前总闸
 阈值全部在 `DEFAULT_CONFIG`（`MediaQaConfig`），可用 `config_from_dict()` /
 `config_from_json()` 覆盖。每个默认值背后都有一次真实事故，注释里写了来由。
 
+### 在用 MoneyPrinterTurbo / social-auto-upload？
+
+这类工具解决「生成」和「分发」，但不管两类静默失败：成片是坏的（口播被压缩加速吞字、BGM 没混进去），
+以及这条内容根本不该发这个平台。拿 `media_qa` 跑一遍你自己的发布包：
+
+```python
+from acpk.media_qa import (
+    DEFAULT_CONFIG, audio_mix_proven, finalize_states, pcm_sha256, publish_gate, speed_violations,
+)
+
+speeds = speed_violations(card_plan["lines"], DEFAULT_CONFIG)    # 口播被压缩加速的卡
+mixed = audio_mix_proven(voiceover_hash, pcm_sha256(final_pcm))  # BGM 是否真混入
+gate = publish_gate(**finalize_states(manually_reviewed=False))  # 没人听过的片子不给过
+```
+
+任何一道闸门拦到你的产线，欢迎开 issue 贴输出——我特别想看别人产线的静默失败样本。
+
 ## 路线图
 
 | 模块 | 状态 | 内容 |
